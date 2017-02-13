@@ -5,8 +5,8 @@ import time
 import boto3
 
 
-ACCESS_KEY = os.environ['AWS_ACCESS_KEY_ID']
-SECRET_KEY = os.environ['AWS_SECRET_ACCESS_KEY']
+ACCESS_KEY = os.environ.get['AWS_ACCESS_KEY_ID']
+SECRET_KEY = os.environ.get['AWS_SECRET_ACCESS_KEY']
 BUCKET_NAME = ''
 BASE_PATH = ''
 
@@ -20,5 +20,8 @@ def s3_upload(data):
     s3.Bucket(bucket_name).put_object(
         Key='{0}/{1}'.format(BASE_PATH, current_minute), Body=data)
 
+
+with open(file_path) as data:
+    s3_upload(data)
 
 s3_upload(data)

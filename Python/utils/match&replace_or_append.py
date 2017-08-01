@@ -11,7 +11,7 @@ def update_file(file, match_string, replace_string):
                           file])
         return "Hosts fils Changed"
     with open(file, "a") as myfile:
-        myfile.write("{} base".format(replace_string))
+        myfile.write(replace_string)
 
 
-update_file("/etc/hosts", '.*\ HOST', get_vhost_ip())
+update_file('PATH to File', '<string to replace>', '<new string>')

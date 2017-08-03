@@ -1,3 +1,5 @@
+#!/bin/python
+
 import re
 import subprocess
 

@@ -1,3 +1,5 @@
+#!/bin/python
+
 import smtplib
 
 def send_mail(subject, msg):

@@ -25,35 +25,35 @@ def convert_ip_to_coordinates(ip):
         return geolite2.lookup(ip)
 
 def break_dict(dictionary, index):
-    return dictionary[0]['address_components'][index]['long_name']
+    try:
+        return dictionary[0]['address_components'][index]['long_name']
+    except IndexError:
+        return "Out of scope"
 
 def convert_coordinates_to_address(ip, depth):
     match = convert_ip_to_coordinates(ip)
     gmaps = googlemaps.Client(key=cfg["Dev API"])
 
     locations = []
-    scales = range(7, 0, -1)
     depth = int(depth)
-    while int(depth) > 0:
-        try:
-            break_dict(gmaps.reverse_geocode(match.location), depth)
-            print break_dict(gmaps.reverse_geocode(match.location), scales[depth])
-            if break_dict(gmaps.reverse_geocode(match.location), scales[depth]) == None:
-                print "Yo"
-            # if break_dict(gmaps.reverse_geocode(match.location), scales[depth]).isdigit():
-            #     depth -= 1
-            #     continue
-            # else:
-            locations.insert(0, (break_dict(gmaps.reverse_geocode(match.location), scales[depth])))
-            depth -= 1
-        except IndexError:
-            depth -= 1
-    return "%s, " * len(locations) % tuple(locations)
+    for scale in range(8, 0, -1):
+        fetch_location = break_dict(gmaps.reverse_geocode(match.location), scale)
+        if fetch_location != "Out of scope":
+            if fetch_location.isdigit():
+                continue
+            else:
+                locations.append(fetch_location)
+        else:
+            scale -= 1
+    locations = locations[:depth]
+    return ("%s, " * len(locations) % tuple(locations))[:-2]
 
 
 if __name__ == "__main__":
     try:
-        sys.argv[2]
+        if int(sys.argv[2]) > 7:
+            print "Can't zoom in that close..."
+            sys.argv[2] = 6
     except IndexError as error:
         sys.argv.append(2)
     print convert_coordinates_to_address(sys.argv[1], sys.argv[2])

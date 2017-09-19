@@ -14,9 +14,6 @@ with open(CONFIG_PATH) as config_file:
     cfg = json.load(config_file)["Google Developer API"]
 
 
-def _format_json(dictionary):
-    return json.dumps(dictionary, indent=4, sort_keys=True)
-
 def convert_ip_to_coordinates(ip):
     if geolite2.lookup(ip) is None:
         print "Can't locate IP"

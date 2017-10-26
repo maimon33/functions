@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-echo "Enter PATH to where you need to make the at"
+echo "Enter PATH to where you need to do the change"
 read -p "Full PATH: " -e -i '' PATH_TO_FILE
 
 public_ip=$(/usr/bin/curl ipinfo.io/ip)

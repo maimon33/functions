@@ -4,9 +4,9 @@ sudo pip install virtualenv
 sudo pip install virtualenvwrapper
 if ! printenv |grep -q WORKON_HOME; then
     if [[ "$OSTYPE" == "darwin"* ]]; then
-        echo "export WORKON_HOME=/home/assi/Envs" >> ~/.bash_profile
+        echo "export WORKON_HOME=$HOME/Envs" >> ~/.bash_profile
     else
-        echo "export WORKON_HOME=/home/assi/Envs" >> ~/.bashrc
+        echo "export WORKON_HOME=$HOME/Envs" >> ~/.bashrc
     fi
 fi
 

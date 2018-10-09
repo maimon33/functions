@@ -1,0 +1,96 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "VisualEditor10",
+            "Effect": "Allow",
+            "Action": [
+                "logs:CreateLogStream",
+                "sns:Publish",
+                "logs:PutLogEvents"
+            ],
+            "Resource": [
+                "arn:aws:sns:eu-west-1:931805387196:rds-snapshot-updates",
+                "arn:aws:logs:*:*:*"
+            ]
+        },
+        {
+            "Sid": "VisualEditor0",
+            "Effect": "Allow",
+            "Action": "kms:CreateGrant",
+            "Resource": "*",
+            "Condition": {
+                "Bool": {
+                    "kms:GrantIsForAWSResource": "true"
+                }
+            }
+        },
+        {
+            "Sid": "VisualEditor1",
+            "Effect": "Allow",
+            "Action": [
+                "kms:Decrypt",
+                "rds:DescribeDBEngineVersions",
+                "rds:DescribeDBSubnetGroups",
+                "rds:DescribePendingMaintenanceActions",
+                "rds:DescribeEngineDefaultParameters",
+                "rds:DescribeDBParameterGroups",
+                "kms:ReEncrypt*",
+                "kms:GenerateDataKey*",
+                "rds:DescribeReservedDBInstancesOfferings",
+                "kms:Encrypt",
+                "rds:DownloadDBLogFilePortion",
+                "rds:DescribeDBInstances",
+                "rds:DescribeEngineDefaultClusterParameters",
+                "kms:DescribeKey",
+                "rds:DescribeDBParameters",
+                "rds:DescribeEventCategories",
+                "rds:DescribeEvents",
+                "rds:DescribeDBClusterSnapshotAttributes",
+                "rds:DescribeDBClusterParameters",
+                "rds:DescribeEventSubscriptions",
+                "rds:DescribeDBSnapshots",
+                "rds:CopyDBSnapshot",
+                "rds:DescribeDBLogFiles",
+                "rds:DeleteDBSnapshot",
+                "rds:DescribeDBSecurityGroups",
+                "kms:ListGrants",
+                "rds:DescribeDBSnapshotAttributes",
+                "rds:DescribeReservedDBInstances",
+                "rds:ListTagsForResource",
+                "rds:CreateDBSnapshot",
+                "kms:RevokeGrant",
+                "rds:DescribeDBClusterSnapshots",
+                "rds:DescribeOrderableDBInstanceOptions",
+                "rds:DescribeOptionGroupOptions",
+                "rds:DownloadCompleteDBLogFile",
+                "rds:DescribeCertificates",
+                "rds:ModifyDBSnapshotAttribute",
+                "rds:DescribeDBClusters",
+                "rds:DescribeAccountAttributes",
+                "rds:DescribeOptionGroups",
+                "rds:DescribeDBClusterParameterGroups"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "VisualEditor2",
+            "Effect": "Allow",
+            "Action": [
+                "sts:AssumeRole",
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+            ],
+            "Resource": [
+                "arn:aws:iam::931805387196:role/rds_backup-unshare",
+                "arn:aws:logs:*:*:*"
+            ]
+        },
+        {
+            "Sid": "VisualEditor3",
+            "Effect": "Allow",
+            "Action": "logs:CreateLogGroup",
+            "Resource": "arn:aws:logs:*:*:*"
+        }
+    ]
+}

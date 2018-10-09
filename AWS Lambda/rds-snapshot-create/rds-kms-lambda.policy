@@ -1,0 +1,73 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "VisualEditor0",
+            "Effect": "Allow",
+            "Action": [
+                "logs:CreateLogStream",
+                "sns:Publish",
+                "logs:PutLogEvents"
+            ],
+            "Resource": [
+                "arn:aws:sns:eu-west-1:931805387196:rds-snapshot-updates",
+                "arn:aws:logs:*:*:*"
+            ]
+        },
+        {
+            "Sid": "VisualEditor1",
+            "Effect": "Allow",
+            "Action": [
+                "kms:Decrypt",
+                "rds:DescribeDBEngineVersions",
+                "rds:DescribeDBSubnetGroups",
+                "kms:ListResourceTags",
+                "rds:DescribePendingMaintenanceActions",
+                "rds:DescribeEngineDefaultParameters",
+                "rds:DescribeDBParameterGroups",
+                "kms:ReEncrypt*",
+                "kms:GenerateDataKey*",
+                "rds:DescribeReservedDBInstancesOfferings",
+                "kms:GetParametersForImport",
+                "kms:GetKeyRotationStatus",
+                "kms:Encrypt",
+                "rds:DownloadDBLogFilePortion",
+                "rds:DescribeDBInstances",
+                "rds:DescribeEngineDefaultClusterParameters",
+                "kms:DescribeKey",
+                "rds:DescribeDBParameters",
+                "rds:DescribeEventCategories",
+                "rds:DescribeEvents",
+                "rds:DescribeDBClusterSnapshotAttributes",
+                "rds:DescribeDBClusterParameters",
+                "kms:ListKeyPolicies",
+                "rds:DescribeEventSubscriptions",
+                "kms:ListRetirableGrants",
+                "rds:DescribeDBSnapshots",
+                "rds:CopyDBSnapshot",
+                "kms:GetKeyPolicy",
+                "rds:DescribeDBLogFiles",
+                "rds:DeleteDBSnapshot",
+                "rds:DescribeDBSecurityGroups",
+                "kms:ListGrants",
+                "rds:DescribeDBSnapshotAttributes",
+                "kms:ListKeys",
+                "rds:DescribeReservedDBInstances",
+                "rds:ListTagsForResource",
+                "rds:CreateDBSnapshot",
+                "kms:ListAliases",
+                "rds:DescribeDBClusterSnapshots",
+                "rds:DescribeOrderableDBInstanceOptions",
+                "rds:DescribeOptionGroupOptions",
+                "rds:DownloadCompleteDBLogFile",
+                "rds:DescribeCertificates",
+                "rds:ModifyDBSnapshotAttribute",
+                "rds:DescribeDBClusters",
+                "rds:DescribeAccountAttributes",
+                "rds:DescribeOptionGroups",
+                "rds:DescribeDBClusterParameterGroups"
+            ],
+            "Resource": "*"
+        }
+    ]
+}

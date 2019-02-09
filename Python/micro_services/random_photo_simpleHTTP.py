@@ -1,10 +1,12 @@
-import SimpleHTTPServer
-import SocketServer as socketserver
 import os
+import sys
 import random
+import SimpleHTTPServer
+
+import SocketServer as socketserver
 
 class MyHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
-    path_to_image = '/pictures_folder'
+    path_to_image = ''
 
     def do_GET(self):
         self.send_response(200)
@@ -19,5 +21,11 @@ class MyHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
         f.close()
 
 if __name__ == "__main__":
-    server = socketserver.TCPServer(("", 8080), MyHandler)
-    server.serve_forever()
+    try:
+        MyHandler.path_to_image = sys.argv[1]
+        server = socketserver.TCPServer(("", 8080), MyHandler)
+        server.serve_forever()
+    except IndexError:
+        print "Missing PATH to folder"
+    except KeyboardInterrupt:
+        print "Server stopped"

@@ -19,15 +19,18 @@ import time
 import logging
 
 from datetime import datetime
+from datetime import timedelta
 
 import boto3
 
 from botocore.exceptions import ClientError
 
-DATE_FORMAT = "%Y-%m-%d"
+DATE_FORMAT = "%Y-%m-%dT%H.%M.%S"
 LOGLEVEL = os.getenv('LOG_LEVEL', 'ERROR').strip()
 INSTANCE_ID = os.getenv('INSTANCE_ID').split(",")
-COPYS_TO_KEEP = int(os.getenv('COPYS_TO_KEEP'))
+INSTANCE_NAME_PREFIX = os.getenv('INSTANCE_NAME_PREFIX').split(",")
+COPIES_TO_KEEP = int(os.getenv('COPIES_TO_KEEP'))
+SNS_TOPIC = os.getenv('SNS_TOPIC')
 INTERVAL = os.getenv('INTERVAL').lower()
 
 
@@ -35,6 +38,15 @@ logger = logging.getLogger()
 logger.setLevel(LOGLEVEL.upper())
 
 
+def update_sns(instance_name, duration):
+    sns_client = boto3.client('sns', region_name='eu-west-1')
+    subject = 'AMI missing'.format(instance_name)
+    response = sns_client.publish(
+        TopicArn=SNS_TOPIC,
+        Message=subject,
+        Subject='No AMI have been create for {}, Last AMI created {} hours ago'.format(instance_name, duration),
+    )
+    
 def lambda_handler(event, context):
     instance_dictionary = {}
     client = boto3.client('ec2')
@@ -45,7 +57,7 @@ def lambda_handler(event, context):
     
     if INTERVAL == "daily":
         hours_between_amis = 24
-    elif INTERVAL == weekly:
+    elif INTERVAL == "weekly":
         hours_between_amis = 168
     else:
         hours_between_amis = 0
@@ -53,46 +65,57 @@ def lambda_handler(event, context):
     # Get instance for the account
     for reservation in instances["Reservations"]:
         for instance in reservation["Instances"]:
-            if instance["InstanceId"] in INSTANCE_ID:
-                instance_id = instance["InstanceId"]
-                instance_dictionary[instance_id] = []
-            else:
-                print("Instance Not Found!")
+            for tag in instance["Tags"]:
+                if tag["Key"] == "Name" and tag["Value"] in INSTANCE_NAME_PREFIX:
+                    instance_id = instance["InstanceId"]
+                    instance_dictionary[instance_id] = []
     
     # Get AMIs for instanses requested
     for image in images:
-        for target_instance in INSTANCE_ID:
-            try:
+        try:
+            if image.name.split(" ")[2] in instance_dictionary.keys():
                 instance_name = image.name.split(" ")[2]
-                image_date = image.name.split(" ")[4]
-            except:
-                continue
-            
-            if instance_name in instance_dictionary.keys():
-                ami_list = instance_dictionary[instance_name]
-                ami_list.append("{} {}".format(image_date, image.image_id))
-                instance_dictionary[instance_name] = ami_list
-                
+                image_date = datetime.strptime(image.creation_date[:-5].replace(":","."), DATE_FORMAT).strftime(DATE_FORMAT)
+                instance_dictionary[instance_name].append("{} {}".format(image_date, image.image_id))
+        except Exception as e:
+            print(e)
+            continue
+    
     # Sort Images by date and reverse to 
     for key, value in instance_dictionary.items():
         value.sort(reverse=True)
         
     # Create an AMI if the time has come
     for instance, snapshots in instance_dictionary.items():
-        now = datetime.now().strftime("%Y-%m-%d")
-        newest_ami_date = snapshots[0].split(" ")[0]
-        difference = datetime.now().strptime(now, "%Y-%m-%d") - datetime.strptime(newest_ami_date, "%Y-%m-%d")
-        if difference.days > hours_between_amis / 24:
+        now = datetime.now().strftime(DATE_FORMAT)
+        try:
+            newest_ami_date = snapshots[0].split(" ")[0]
+        except IndexError:
+            newest_ami_date = (datetime.now() - timedelta(days=365)).strftime(DATE_FORMAT)
+            
+        difference = datetime.now().strptime(now, DATE_FORMAT) - datetime.strptime(newest_ami_date, DATE_FORMAT)
+
+        if difference.total_seconds() / 3600 >= hours_between_amis:
             try:
-                client.create_image(InstanceId=instance_id, Name="Lambda - " + instance + " from " + now, Description="Lambda created AMI of instance " + instance + " from " + now, NoReboot=True, DryRun=False)
+                print("taking snapshot")
+                creating = "true"
+                client.create_image(InstanceId=instance, Name="Lambda - {} from {}".format(instance, now), Description="Lambda created AMI of instance {} from {}".format(instance, now), NoReboot=True, DryRun=False)
             except ClientError as e:
+                creating = "true"
                 print("AMI already being created")
         else:
             print("nothing to do")
+            creating = "false"
+            
+        if difference.total_seconds() / 3600 > hours_between_amis + 1 and creating == "false":
+            hours_since_last_ami = difference.total_seconds() / 3600
+            update_sns(instance, hours_since_last_ami)
+        else:
+            print("all good - nothing to do")
         
     # Delete the oldest AMI if we exceed retention policy
     for instance, snapshots in instance_dictionary.items():
-        ami_to_keep = COPYS_TO_KEEP - 1
+        ami_to_keep = COPIES_TO_KEEP - 1
         for ami in snapshots[ami_to_keep:]:
             ami_id = ami.split(" ")[1]
             try:

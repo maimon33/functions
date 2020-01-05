@@ -1,0 +1,3 @@
+boto3
+prettytable
+click==6.7

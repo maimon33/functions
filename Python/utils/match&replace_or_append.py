@@ -1,19 +1,16 @@
 #!/bin/python
 
-import re
-import subprocess
+def update_file(filepath, match_string, replace_string):
+    # Read in the file
+    with open(filepath, 'r') as file:
+        filedata = file.read()
 
-def update_file(file, match_string, replace_string):
-    content = open(file).read()
-    for match in re.finditer(match_string, content, re.MULTILINE):
-        subprocess.Popen(["sed",
-                          "-i",
-                          "''",
-                          "s/.{}/{} base/".format(match_string, replace_string),
-                          file])
-        return "Hosts fils Changed"
-    with open(file, "a") as myfile:
-        myfile.write(replace_string)
+        # Replace the target string
+        filedata = filedata.replace(match_string, replace_string)
+
+    # Write the file out again
+    with open(filepath, 'w') as file:
+        file.write(filedata)
 
 
 update_file('PATH to File', '<string to replace>', '<new string>')

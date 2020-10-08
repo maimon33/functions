@@ -51,3 +51,24 @@ python sg_export.py json resolve
 }
 ```
 **You can "resolve" security group to names if you add resolve at the end of the command**
+
+## Peering Mapper
+
+This script outputs peering connection of the account in table format.
+
+### Installation
+Install required packages<br>
+`pip install -r peering_mapper_requirements.txt`
+
+### Usage
+Get peering connection for a specified region or leave black to get all
+```
+python peering_mapper.py eu-west-1
+Peering connections in Region: eu-west-1 (1)
++-----------------------+--------------+----------------+---------------+-----------------------+-----------------+
+|      peering name     |  Local VPC   |   Local cidr   | Remote region |       Remote VPC      |   Remote cidr   |
++-----------------------+--------------+----------------+---------------+-----------------------+-----------------+
+| pcx-498649984uygf87t4 | vpc-47yt4747 | 10.25.100.0/24 |   eu-west-1   | vpc-f88fyg4847t87teu8 | 172.31.200.0/23 |
++-----------------------+--------------+----------------+---------------+-----------------------+-----------------+
+```
+__add `no` to get peering connection ID and not name__

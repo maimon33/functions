@@ -1,5 +1,12 @@
 # k8s scripts and functions
 
+## ssh-nodes
+
+Access k8s nodes via kubectl resources
+
+**Usage**
+`./ssh-nodes.sh node_name`
+
 ## scaler
 
 Easy script to scale replicas on your cluster

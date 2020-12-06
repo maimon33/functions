@@ -1,9 +1,9 @@
-### AWS helper scripts
-#### set_region script
+## AWS helper scripts
+### set_region script
 ##### Usage
 `. set_region.sh`  
 
-#### assume-role
+### assume-role
 Easily assume role to another AWS account. for easy in AWScli and boto3.
 
 ##### Pre-configuration

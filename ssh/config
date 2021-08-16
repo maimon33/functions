@@ -1,0 +1,24 @@
+Host *
+    LogLevel ERROR
+    UserKnownHostsFile /dev/null
+    StrictHostKeyChecking no
+
+Host public-jump
+    Hostname hello.vpn.cyberciti.biz
+    User assi
+    IdentityFile ~/ssh/public-jump.pem
+    Port 22
+ 
+Host private-jump
+    Hostname 192.168.2.25
+    User assi
+    IdentityFile ~/ssh/private-jump.pem
+    Port 22
+    ProxyCommand ssh -W %h:%p public-jump
+ 
+Host db-server
+    Hostname 10.8.0.5
+    User assi
+    IdentityFile ~/ssh/db-jump.pem
+    Port 22
+    ProxyCommand ssh -W %h:%p private-jump

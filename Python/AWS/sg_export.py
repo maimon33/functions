@@ -10,6 +10,7 @@ from prettytable import PrettyTable
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--output", type=str, default="json")
+parser.add_argument("--vpc", type=str)
 parser.add_argument("--resolve", action=argparse.BooleanOptionalAction)
 parser.add_argument("--risk", action=argparse.BooleanOptionalAction)
 args = parser.parse_args()
@@ -17,7 +18,7 @@ args = parser.parse_args()
 def _format_json(dictionary):
     return json.dumps(dictionary, indent=4, sort_keys=True)
 
-def export_sg(output, resolve_group_names=False, risk=False):
+def export_sg(output, resolve_group_names=False, risk=False, vpc=False):
 	#Explicitly declaring variables here grants them global scope
 	cidr_block = ""
 	ip_protpcol = ""
@@ -28,7 +29,7 @@ def export_sg(output, resolve_group_names=False, risk=False):
 	group_names = {}
 
 	x = PrettyTable()
-	x.field_names = ["GroupId", "In/Out", "Source/Destination", "From Port - To Port"]
+	x.field_names = ["VPC ID", "GroupId", "In/Out", "Source/Destination", "From Port - To Port"]
 
 	ec2 = boto3.client('ec2')
 	sgs = ec2.describe_security_groups()["SecurityGroups"]
@@ -44,6 +45,7 @@ def export_sg(output, resolve_group_names=False, risk=False):
 
 	for sg in sgs:
 		group_id = sg['GroupId']
+		group_vpc = sg['VpcId']
 		group_name = sg["GroupName"]
 		if group_id not in group_dict:
 			group_dict[group_id] = {}
@@ -95,7 +97,11 @@ def export_sg(output, resolve_group_names=False, risk=False):
 							related_address = from_source
 			try:
 				group_dict[group_id]["rules"].append("Inbound: {}-{}, From: {}".format(from_port, to_port, related_address))
-				x.add_row([group_id, "In", related_address, "{}-{}".format(from_port, to_port)])
+				if vpc:
+					if vpc == group_vpc:
+						x.add_row([group_vpc, group_id, "In", related_address, "{}-{}".format(from_port, to_port)])
+				else:
+					x.add_row([group_vpc, group_id, "In", related_address, "{}-{}".format(from_port, to_port)])
 			except UnboundLocalError:
 				# Not a risky rule
 				pass
@@ -145,6 +151,6 @@ def export_sg(output, resolve_group_names=False, risk=False):
 		return _format_json(group_dict)
 
 if args.output == "json":
-	print(export_sg("j", args.resolve, args.risk))
+	print(export_sg("j", args.resolve, args.risk, args.vpc))
 else:
-	print(export_sg("t", args.resolve, args.risk))
+	print(export_sg("t", args.resolve, args.risk, args.vpc))

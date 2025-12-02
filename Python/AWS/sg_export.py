@@ -51,6 +51,9 @@ def export_sg(output, resolve_group_names=False, risk=False, vpc=False):
 			group_dict[group_id] = {}
 			group_dict[group_id]["Group Name"] = group_name
 			group_dict[group_id]["rules"] = []
+		else:
+			print("not healthy")
+		# print(group_dict)
 
 		# InBound permissions ##########################################
 		inbound = sg['IpPermissions']
@@ -99,6 +102,7 @@ def export_sg(output, resolve_group_names=False, risk=False, vpc=False):
 				group_dict[group_id]["rules"].append("Inbound: {}-{}, From: {}".format(from_port, to_port, related_address))
 				if vpc:
 					if vpc == group_vpc:
+						print(len(group_dict))
 						x.add_row([group_vpc, group_id, "In", related_address, "{}-{}".format(from_port, to_port)])
 				else:
 					x.add_row([group_vpc, group_id, "In", related_address, "{}-{}".format(from_port, to_port)])

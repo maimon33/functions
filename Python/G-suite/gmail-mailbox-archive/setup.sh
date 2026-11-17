@@ -113,7 +113,12 @@ job_status() { cat "$BATCH/status/$(lower "$1")" 2>/dev/null || echo none; }
 set_job_status() { put "$BATCH/status/$(lower "$1")" "$2"; }
 # One fixed name per mailbox, so Docker itself refuses to copy a mailbox twice at once.
 container_name() { printf '%s-copy-%s' "$CONTAINER_PREFIX" "$(lower "$1" | sed 's/[^a-z0-9_.-]/_/g')"; }
-log_line() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*" >>"$BATCH_LOG"; }  # UTC, like the containers
+# Every line of the batch log starts with who wrote it: [mailbox], or [batch] for the runner itself.
+log_line() {  # log_line WHO MESSAGE; the time is UTC, like the containers
+  local who=$1
+  shift
+  printf '[%s] %s %s\n' "$who" "$(date -u +%H:%M:%S)" "$*" >>"$BATCH_LOG"
+}
 
 describe() {
   case "$1" in
@@ -197,7 +202,7 @@ start_job() {
   name=$(container_name "$source")
   status=$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null || true)
   if [ "$status" = running ]; then
-    log_line "[$source] a container is already copying this mailbox; following it"
+    log_line "$source" "a container is already copying this mailbox; following it"
     follow "$source" "$name" 0
   else
     if [ -n "$status" ]; then  # left behind by a run that was cut short: keep its output, then replace it
@@ -210,11 +215,11 @@ start_job() {
       --label "gmail-archive.role=copy" --label "gmail-archive.dest=$(lower "$B_DEST")" \
       -v "$PWD/secrets:/secrets:ro" -v "$PWD/data:/data" "$IMAGE" \
       --source "$source" --dest "$B_DEST" --workers "$B_WORKERS" --share-file "/$SHARE_FILE" 2>&1); then
-      log_line "[$source] could not be started: $error"
+      log_line "$source" "could not be started: $error"
       set_job_status "$source" 125
       return 1
     fi
-    log_line "[$source] started"
+    log_line "$source" "started"
     follow "$source" "$name" all
   fi
   set_job_status "$source" running
@@ -230,7 +235,7 @@ finish_job() {  # finish_job SOURCE CONTAINER EXIT_CODE
   } >>"$LOG_DIR/$1.log"
   docker rm "$2" >/dev/null 2>&1 || true
   set_job_status "$1" "$3"
-  log_line "[$1] finished: $(describe "$3")"
+  log_line "$1" "finished: $(describe "$3")"
 }
 
 reap_and_count() {  # record containers that have ended; set N_RUNNING and N_QUEUED
@@ -248,7 +253,7 @@ reap_and_count() {  # record containers that have ended; set N_RUNNING and N_QUE
           "false "*) finish_job "$source" "$name" "${state#false }" ;;
           *)
             set_job_status "$source" 125
-            log_line "[$source] its container no longer exists; marked as failed"
+            log_line "$source" "its container no longer exists; marked as failed"
             ;;
         esac
         ;;
@@ -305,11 +310,11 @@ cmd__runner() {  # the background process; started by start_runner, never by han
   put "$BATCH/runner.pid" "$$"
   unlock
   trap 'touch "$BATCH/stop"' TERM INT
-  log_line "==> batch $BATCH_ID: copying into $B_DEST, $B_WORKERS workers shared by up to $B_PARALLEL mailboxes at a time"
+  log_line batch "==> batch $BATCH_ID: copying into $B_DEST, $B_WORKERS workers shared by up to $B_PARALLEL mailboxes at a time"
 
   while :; do
     if ! docker ps -q >/dev/null 2>&1; then
-      log_line "Docker is not responding; waiting for it"
+      log_line batch "Docker is not responding; waiting for it"
       sleep 15
       continue
     fi
@@ -317,7 +322,7 @@ cmd__runner() {  # the background process; started by start_runner, never by han
     if [ -e "$BATCH/stop" ]; then
       if [ -z "$signalled" ]; then
         signalled=yes
-        log_line "==> stop requested: each mailbox finishes the messages it is copying right now"
+        log_line batch "==> stop requested: each mailbox finishes the messages it is copying right now"
         while IFS= read -r source <&3; do
           if [ "$(job_status "$source")" = running ]; then
             docker kill --signal=TERM "$(container_name "$source")" >/dev/null 2>&1

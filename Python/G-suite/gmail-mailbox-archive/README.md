@@ -128,11 +128,20 @@ Archived mailboxes/leaver1@example.com/<each of their own labels>
 
 ## Reading the output
 
-All times in the logs are UTC.
+All times in the logs are UTC. Mailboxes are copied side by side, so every line of the
+batch log starts with who wrote it: the mailbox, or `[batch]` for the background runner.
 
 ```
-09:22:36    600/1,500 copied, 30 MB, 4.8 msg/s overall, 4.9 msg/s now (per message: download 0.44s, upload 1.61s)
+[batch] 09:20:01 ==> batch 20260301-092001: copying into archive@example.com, 12 workers shared by up to 3 mailboxes at a time
+[leaver1@example.com] 09:20:02 started
+[leaver2@example.com] 09:20:02 started
+[leaver1@example.com] 09:22:36    600/1,500 copied, 30 MB, 4.8 msg/s overall, 4.9 msg/s now (per message: download 0.44s, upload 1.61s)
+[leaver2@example.com] 09:22:41    400/9,200 copied, 22 MB, 2.5 msg/s overall, 2.6 msg/s now (per message: download 0.47s, upload 1.70s)
 ```
+
+To see one mailbox only: `./setup.sh logs leaver1@example.com`, or
+`grep -F '[leaver1@example.com]' logs/<batch>/batch.log`. The per-mailbox files
+`logs/<batch>/<mailbox>.log` hold one mailbox each, so their lines carry no tag.
 
 A progress line appears every 200 messages. At the end of each mailbox:
 

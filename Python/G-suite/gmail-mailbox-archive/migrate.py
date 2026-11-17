@@ -4,6 +4,7 @@
 Every message from each --source mailbox is inserted, unchanged, into the
 --dest mailbox and labelled "<prefix>/<source address>". The source user's
 Inbox, Sent, Drafts and own labels become sub-labels of that label.
+With --query, only the messages that match a Gmail search are copied.
 
 Nothing is ever deleted or modified in the source mailbox: the OAuth scopes
 requested below do not permit it.
@@ -37,6 +38,9 @@ SCOPES = [
 SYSTEM_LABELS = {"INBOX": "Inbox", "SENT": "Sent", "DRAFT": "Drafts"}
 
 RETRIES = 8  # exponential backoff on rate limits and server errors
+LIST_PROGRESS_EVERY = 100_000  # while listing a mailbox, say how far it is this often
+LARGE_MAILBOX = 500_000  # messages; from here on, warn how long the copy will take
+TYPICAL_RATE = 5  # messages/s that a copy usually reaches; Gmail's ceiling is about 10
 
 # Exit codes that setup.sh turns into step-by-step guidance.
 EXIT_NOT_AUTHORISED = 3  # domain-wide delegation is missing or has the wrong scopes
@@ -69,9 +73,10 @@ class WorkerShare:
 
     Gmail limits writes per archive mailbox, not per process, so containers that copy
     different mailboxes into the same archive have to share one worker budget.
-    setup.sh gives every container the same budget and keeps the number of running
-    containers in a small file. Each container re-reads that file and takes an equal
-    share, so the total stays near the budget as containers start and finish.
+    setup.sh divides that budget among the mailboxes being copied and keeps the result
+    in a small file, one "mailbox workers" line each. Each container re-reads the file
+    and takes its own line, so the total stays at the budget as containers start and
+    finish. Without a file, this process uses the whole budget.
     """
 
     RECHECK_SECONDS = 10
@@ -82,18 +87,11 @@ class WorkerShare:
         self.current = None
         self.checked = None
 
-    def limit(self):
+    def limit(self, mailbox):
         now = time.monotonic()
         if self.current is None or (self.share_file and now - self.checked >= self.RECHECK_SECONDS):
             self.checked = now
-            active = 1
-            if self.share_file:
-                try:
-                    with open(self.share_file) as handle:
-                        active = max(1, int(handle.read().strip()))
-                except (OSError, ValueError):
-                    pass  # no file yet, or caught mid-write: assume we are alone until the next check
-            share = max(1, self.budget // active)
+            share, active = self.read(mailbox)
             if share != self.current:
                 if active > 1:
                     log(f"   using {share} of {self.budget} workers ({active} mailboxes are being copied)")
@@ -101,6 +99,27 @@ class WorkerShare:
                     log(f"   using {share} parallel workers")
                 self.current = share
         return self.current
+
+    def read(self, mailbox):
+        """Return (workers for this mailbox, number of mailboxes being copied)."""
+        if not self.share_file:
+            return self.budget, 1
+        try:
+            with open(self.share_file) as handle:
+                lines = [line.split() for line in handle if line.strip()]
+        except OSError:
+            lines = []
+        for fields in lines:
+            if len(fields) == 2 and fields[0] == mailbox.lower() and fields[1].isdigit():
+                return max(1, int(fields[1])), len(lines)
+        if len(lines) == 1 and len(lines[0]) == 1 and lines[0][0].isdigit():
+            # Only a number: how many mailboxes are being copied, as written by a batch
+            # that an older setup.sh started. Take an equal share.
+            active = max(1, int(lines[0][0]))
+            return max(1, self.budget // active), active
+        # Not listed (yet). Keep the last share; a mailbox that never had one takes a
+        # single worker, so the budget cannot be exceeded.
+        return self.current or 1, len(lines) + 1
 
 
 STATE_SCHEMA = (
@@ -186,14 +205,26 @@ def check_mailboxes(clients, addresses):
     return problems
 
 
-def list_ids(svc, label_id=None):
+def list_ids(svc, label_id=None, query=None, what=None):
+    """Ids of the messages in a mailbox (never Spam or Trash).
+
+    `label_id` and `query` (a Gmail search) narrow the list. `what` names the list in a
+    progress line, printed every LIST_PROGRESS_EVERY messages, so that a very large
+    mailbox does not look stuck.
+    """
     params = {"userId": "me", "maxResults": 500}
     if label_id:
         params["labelIds"] = [label_id]
+    if query:
+        params["q"] = query
     ids = []
+    reported = 0
     while True:
         resp = svc.users().messages().list(**params).execute(num_retries=RETRIES)
         ids.extend(m["id"] for m in resp.get("messages", []))
+        if what and len(ids) - reported >= LIST_PROGRESS_EVERY:
+            reported = len(ids)
+            log(f"   listing {what}: {len(ids):,} so far")
         if "nextPageToken" not in resp:
             return ids
         params["pageToken"] = resp["nextPageToken"]
@@ -260,9 +291,10 @@ def copy_one(clients, source, dest, msg_id, label_map, root_id):
     return inserted["id"], len(raw), t_downloaded - t_start, t_uploaded - t_downloaded
 
 
-def migrate(clients, db, source, dest, prefix, share, dry_run, totals):
+def migrate(clients, db, source, dest, prefix, query, share, dry_run, totals):
     """Copy one mailbox. Returns True only if everything is verified in the destination.
 
+    `query` is a Gmail search; if given, only the messages that match it are copied.
     `share` says how many messages may be copied at once; it can change during the run.
     `totals` is updated as messages are copied, so the end-of-run summary is right
     even when the run is interrupted part-way through a mailbox.
@@ -270,6 +302,18 @@ def migrate(clients, db, source, dest, prefix, share, dry_run, totals):
     src, dst = clients.svc(source), clients.svc(dest)
     root = f"{prefix}/{source}"
     log(f"== {source} -> {dest}, label '{root}'")
+    size = src.users().getProfile(userId="me").execute(num_retries=RETRIES)["messagesTotal"]
+    if query:
+        log(f"   filter: copying only the messages that match: {query}")
+        log(f"   the mailbox holds {size:,} messages in all; what the filter leaves out is NOT archived")
+    else:
+        log(f"   the mailbox holds {size:,} messages")
+        if size >= LARGE_MAILBOX:
+            log(
+                f"   WARNING: that is about {size / TYPICAL_RATE / 86400:,.1f} days of copying at "
+                f"{TYPICAL_RATE} messages/s, after a long wait while they are listed."
+            )
+            log("   If most of it is automated mail, stop, and copy only what matters with --query.")
 
     label_names = {}  # source label id -> destination label name
     for label in list_labels(src):
@@ -278,10 +322,11 @@ def migrate(clients, db, source, dest, prefix, share, dry_run, totals):
         elif label.get("type") == "user":
             label_names[label["id"]] = f"{root}/{label['name']}"
 
-    source_ids = list_ids(src)
+    source_ids = list_ids(src, query=query, what="source messages")
     done = copied_ids(db, source, dest)
     todo = [i for i in source_ids if i not in done]
-    log(f"   {len(source_ids):,} messages in source, {len(source_ids) - len(todo):,} already copied, {len(todo):,} to copy")
+    found = "messages in source match the filter" if query else "messages in source"
+    log(f"   {len(source_ids):,} {found}, {len(source_ids) - len(todo):,} already copied, {len(todo):,} to copy")
 
     if dry_run:
         have = {label["name"].lower() for label in list_labels(dst)}
@@ -339,7 +384,7 @@ def migrate(clients, db, source, dest, prefix, share, dry_run, totals):
     try:
         more = True
         while more or in_flight:
-            while more and len(in_flight) < share.limit():
+            while more and len(in_flight) < share.limit(source):
                 msg_id = next(waiting, None)
                 if msg_id is None:
                     more = False
@@ -362,12 +407,12 @@ def migrate(clients, db, source, dest, prefix, share, dry_run, totals):
     # Verify against the destination itself, not just our own bookkeeping.
     recorded = copied_ids(db, source, dest)
     not_copied = [i for i in source_ids if i not in recorded]
-    in_archive = len(list_ids(dst, root_id))
+    in_archive = len(list_ids(dst, root_id, what="archive messages"))
     ok = not failures and not not_copied and in_archive == len(recorded)
 
     log(f"   copied this run:           {stats['copied']:,} ({stats['bytes'] / 1e6:,.0f} MB)")
     log(f"   failed this run:           {len(failures):,}")
-    log(f"   source messages:           {len(source_ids):,}")
+    log(f"   source messages{' matching the filter' if query else ''}:           {len(source_ids):,}")
     log(f"   source messages not copied: {len(not_copied):,}")
     log(f"   recorded as copied (all runs): {len(recorded):,}")
     log(f"   messages under archive label:  {in_archive:,}")
@@ -375,11 +420,17 @@ def migrate(clients, db, source, dest, prefix, share, dry_run, totals):
         log(f"   FAILED {msg_id}: {error}")
     if len(failures) > 20:
         log(f"   ... and {len(failures) - 20} more failures")
-    log(f"   RESULT for {source}: {'OK, everything is in the archive' if ok else 'INCOMPLETE, do not delete this account; rerun'}")
+    if not ok:
+        result = "INCOMPLETE, do not delete this account; rerun"
+    elif query:
+        result = "OK for the filter only: every message that matches it is in the archive; the rest of the mailbox was NOT copied"
+    else:
+        result = "OK, everything is in the archive"
+    log(f"   RESULT for {source}: {result}")
     return ok
 
 
-def log_summary(sources, outcomes, totals, started, dry_run):
+def log_summary(sources, outcomes, totals, started, dry_run, query):
     """One closing line for the whole run, printed however the run ended."""
     done = [s for s in sources if outcomes.get(s)]
     not_done = [s for s in sources if not outcomes.get(s)]  # incomplete, interrupted or never reached
@@ -400,6 +451,8 @@ def log_summary(sources, outcomes, totals, started, dry_run):
         )
         if not_done:
             line += f"; NOT complete, do not delete: {', '.join(not_done)}"
+    if query:
+        line += "; a filter was used, so only the messages matching it are covered"
     log(line)
 
 
@@ -419,11 +472,16 @@ def main():
         default="/data",
         help="directory for progress files, one per source mailbox; keep it between runs (default: /data)",
     )
+    parser.add_argument(
+        "--query",
+        help="copy only the messages that match this Gmail search, for example "
+        "'-label:alerts newer_than:2y' (default: every message except Spam and Trash)",
+    )
     parser.add_argument("--workers", type=int, default=4, help="parallel copies (default: 4)")
     parser.add_argument(
         "--share-file",
-        help="file holding the number of containers copying into this archive right now; "
-        "--workers is divided by it (written by setup.sh)",
+        help="file with one 'mailbox workers' line per mailbox being copied into this archive: "
+        "this mailbox's part of --workers (written by setup.sh)",
     )
     parser.add_argument("--dry-run", action="store_true", help="count and check access; write nothing")
     args = parser.parse_args()
@@ -441,6 +499,7 @@ def main():
 
     signal.signal(signal.SIGTERM, terminate)
 
+    query = (args.query or "").strip() or None
     clients = Clients(args.key)
     share = WorkerShare(args.workers, args.share_file)
     outcomes = {}  # source -> True once verified (or, in a dry run, checked)
@@ -456,7 +515,7 @@ def main():
         for source in args.source:
             db = open_state(args.state_dir, source, read_only=args.dry_run)
             try:
-                outcomes[source] = migrate(clients, db, source, args.dest, prefix, share, args.dry_run, totals)
+                outcomes[source] = migrate(clients, db, source, args.dest, prefix, query, share, args.dry_run, totals)
             finally:
                 db.close()
     except RefreshError as exc:
@@ -468,7 +527,7 @@ def main():
     except KeyboardInterrupt:
         sys.exit(130)
     finally:
-        log_summary(args.source, outcomes, totals, started, args.dry_run)
+        log_summary(args.source, outcomes, totals, started, args.dry_run, query)
     sys.exit(0 if all(outcomes.values()) else 1)
 
 

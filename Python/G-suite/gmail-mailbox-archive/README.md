@@ -7,6 +7,7 @@ unchanged, into the archive mailbox under a label named after the source address
 - The source mailbox is never changed or deleted from. The permissions the script asks for do not allow it.
 - It is safe to stop and rerun at any point. Progress is recorded per message, and a rerun copies only what is missing.
 - Each mailbox is verified against the archive at the end, and the script tells you in plain words whether the account is safe to delete.
+- A mailbox that is mostly automated mail can be copied in part, with a Gmail search that says what to keep.
 
 One command does everything, including the Google Cloud setup:
 
@@ -84,16 +85,22 @@ It usually takes effect within a few minutes. Google allows up to 24 hours.
 |---|---|
 | `./setup.sh [options] ARCHIVE SOURCE [SOURCE...]` | Sets up whatever is missing, then copies the mailboxes in the background |
 | `./setup.sh status` | Shows each mailbox: queued, copying (with its latest progress line), or its result |
-| `./setup.sh logs` | Follows the live log of the whole batch. Ctrl-C leaves the log; the copy keeps running |
+| `./setup.sh logs` | Follows the live log of everything that is copying. Ctrl-C leaves the log; the copy keeps running |
 | `./setup.sh logs MAILBOX` | Follows one mailbox, or prints its saved log if it has finished |
 | `./setup.sh stop` | Stops cleanly: each mailbox finishes the messages it is copying, then exits. Nothing is lost |
-| `./setup.sh resume` | Continues a stopped batch, and retries every mailbox that is not verified yet |
+| `./setup.sh resume` | Continues what was stopped, and retries every mailbox that is not verified yet |
+| `./setup.sh remove MAILBOX` | Takes one mailbox out of its batch. If it is copying, it stops cleanly; `resume` no longer retries it. What it has copied stays |
+
+`status`, `logs`, `stop`, `resume` and `remove` act on every batch. Add `--archive ADDRESS`
+after the command to act on the batch of one archive mailbox only, for example
+`./setup.sh stop --archive archive@example.com`.
 
 | Option | Default | Meaning |
 |---|---|---|
 | `--sources-file FILE` | | Read source mailboxes from a file, one per line. Blank lines and `#` comments are ignored. See `sources.example.txt` |
-| `--workers N` | 12 | Total number of messages copied at once, shared by all mailboxes being copied |
-| `--parallel N` | 3 | Mailboxes copied at the same time, one container each |
+| `--query SEARCH` | | Copy only the messages that match a Gmail search, for the source mailboxes of this command. See [Copying only part of a mailbox](#copying-only-part-of-a-mailbox) |
+| `--workers N` | 12 | Total number of messages copied into one archive at once, shared by the mailboxes being copied into it |
+| `--parallel N` | 3 | Mailboxes copied into one archive at the same time, one container each |
 | `--skip-dry-run` | | Skip step 5 and the confirmation. Only for reruns, after a dry run has passed |
 | `PROJECT_ID=...` (environment) | derived from the domain | Use a specific Google Cloud project |
 
@@ -101,13 +108,47 @@ It usually takes effect within a few minutes. Google allows up to 24 hours.
 
 ### Batches
 
-The mailboxes you start together form a batch. One background process works through its
-queue, a few mailboxes at a time.
+The mailboxes you copy into one archive mailbox form a batch. One background process
+works through its queue, a few mailboxes at a time.
 
-- **Adding mailboxes while a batch is running** adds them to that batch. Just run the normal command again with the new addresses. A mailbox that is already queued or copying is not added twice.
+- **Adding mailboxes while a batch is running** adds them to that batch. Just run the normal command again with the new addresses. A mailbox that is already queued or copying is left as it is.
 - **A stopped batch** is continued by `./setup.sh resume`, or by adding more mailboxes to it.
-- **A finished batch** is left alone. The next run starts a new batch. Its logs stay under `logs/`.
-- One batch copies into one archive mailbox. Wait for it to finish before starting a copy into a different archive.
+- **A finished batch** is left alone. The next run into that archive starts a new batch. Its logs stay under `logs/`.
+- **A second archive mailbox** gets its own batch, with its own `--workers` and `--parallel`, and runs at the same time as the first. Gmail's limit applies to each archive mailbox separately.
+- **A mailbox is in one batch at a time.** If it is queued or copying into one archive, a command that names it for another archive skips it and says so.
+
+## Copying only part of a mailbox
+
+Some mailboxes are almost entirely automated mail: alerts, notifications, copies of a
+group's mail. They can hold millions of messages, which would take weeks to copy and is
+rarely worth keeping. The script prints the size of each mailbox before it lists it, and
+warns from 500,000 messages up:
+
+```
+   the mailbox holds 9,600,000 messages
+   WARNING: that is about 22.2 days of copying at 5 messages/s, after a long wait while they are listed.
+```
+
+`--query` takes a Gmail search, the same syntax as the search box in Gmail, and copies
+only the messages that match it:
+
+```
+./setup.sh --query '-label:alerts' archive@example.com leaver3@example.com
+```
+
+| Search | Copies |
+|---|---|
+| `-label:alerts` | Everything except the label `alerts` |
+| `-label:alerts -label:build-notifications` | Everything except those two labels. A space in a label name is written as a hyphen |
+| `-from:noreply@example.com` | Everything except mail from that sender |
+| `newer_than:2y` | Only the last two years |
+| `-category:updates -category:promotions` | Everything except Gmail's Updates and Promotions categories |
+
+- **Find out what fills the mailbox first.** In Gmail, signed in as that user or as a delegate, the label list shows which labels are large. The dry run (step 5) then reports exactly how many messages the search matches, before anything is copied.
+- **The search applies to the source mailboxes of that command.** To use a different search for another mailbox, run the command again for that mailbox. Both join the same batch.
+- **What the search leaves out is not archived.** It is lost when the account is deleted. The result of such a mailbox reads `OK for the filter only`, never a plain `OK`, and `status` shows the search next to it.
+- **Changing your mind is cheap.** Running the mailbox again with a wider search, or with none, copies only what is not in the archive yet.
+- Nothing is deleted from the source mailbox, with or without a search.
 
 ## What ends up in the archive
 
@@ -143,7 +184,8 @@ To see one mailbox only: `./setup.sh logs leaver1@example.com`, or
 `grep -F '[leaver1@example.com]' logs/<batch>/batch.log`. The per-mailbox files
 `logs/<batch>/<mailbox>.log` hold one mailbox each, so their lines carry no tag.
 
-A progress line appears every 200 messages. At the end of each mailbox:
+A progress line appears every 200 messages, and every 100,000 messages while a large
+mailbox is being listed. At the end of each mailbox:
 
 ```
 RESULT for leaver1@example.com: OK, everything is in the archive
@@ -152,6 +194,8 @@ RESULT for leaver2@example.com: INCOMPLETE, do not delete this account; rerun
 
 `OK` means three things were checked: no message failed, every message in the source is
 recorded as copied, and the number of messages under the archive label matches.
+With `--query`, the same is checked for the messages that match the search, and the result
+says so: `OK for the filter only: ... the rest of the mailbox was NOT copied`.
 
 At the end of the batch, `logs/<batch>/batch.log` and `./setup.sh stop` show a summary:
 
@@ -164,9 +208,9 @@ SUMMARY: 1 of 2 mailboxes verified in the archive; 48950 messages copied in this
 
 ## Speed
 
-Gmail limits how fast one mailbox can be written to, and every copy writes into the same
-archive mailbox. That puts the ceiling at roughly 10 messages per second in total, however
-many mailboxes or containers are running.
+Gmail limits how fast one mailbox can be written to. That puts the ceiling at roughly 10
+messages per second into one archive mailbox, however many mailboxes or containers are
+copying into it.
 
 Measured on real mailboxes averaging about 0.5 MB per message:
 
@@ -176,13 +220,14 @@ Measured on real mailboxes averaging about 0.5 MB per message:
 | 10 | about 5 |
 
 - More than about 16 workers gains nothing. Past the ceiling, requests are throttled and retried.
-- `--parallel` does not make the total faster. It lets small mailboxes finish without waiting behind a large one, and keeps one failing mailbox from holding up the rest. The worker budget is split between the mailboxes that are copying, and is redistributed as they finish.
+- `--parallel` does not make the total faster. It lets small mailboxes finish without waiting behind a large one, and keeps one failing mailbox from holding up the rest. The workers are divided among the mailboxes that are copying, as evenly as the number allows, and are divided again whenever one starts or finishes.
+- Gmail can slow down during a long run. In one run, after about two hours the time Gmail took to accept a message rose from under 2 seconds to about 6, with no error, and the rate fell to a third.
 - As a rough guide, 100,000 messages take five to six hours at 5 messages per second.
 - Running it from a laptop is fine. In those measurements the rate did not depend on message size, so the time goes on waiting for Gmail, not on bandwidth.
 
 ## Before you delete an account
 
-1. Wait for `OK, verified in the archive` for that mailbox in `./setup.sh status`.
+1. Wait for `OK, verified in the archive` for that mailbox in `./setup.sh status`. `OK for its filter only` means the mailbox was copied with `--query`: deleting the account loses everything the search left out.
 2. Mail keeps arriving while and after the copy runs. Immediately before deleting the account, run the same command once more for that mailbox. It copies only what is new and takes a minute or two.
 3. Open the archive mailbox and spot-check the label.
 4. Then delete the account. A deleted user can be restored from the Admin console for 20 days.
@@ -196,7 +241,7 @@ Once the account is gone, the script can no longer read it.
 |---|---|
 | `secrets/sa.json` | The service account key. **Treat it like a password**: with the delegation in place it can read every mailbox in the domain |
 | `data/state/<mailbox>.db` | The record of which messages have been copied, one file per source mailbox |
-| `data/batch/` | The current batch: queue, settings and the status of each mailbox |
+| `data/batches/<archive>/` | The batch of one archive mailbox: queue, settings, and the status and search of each mailbox |
 | `logs/<batch>/batch.log` | The live log of a batch, with its summary at the end |
 | `logs/<batch>/<mailbox>.log` | The complete log of one mailbox |
 
@@ -313,7 +358,7 @@ access the script created:
 
 | File | Role |
 |---|---|
-| `setup.sh` | Setup, the dry run, and the batch: queue, background runner, `status`, `logs`, `stop`, `resume` |
+| `setup.sh` | Setup, the dry run, and the batches: queue, background runner, `status`, `logs`, `stop`, `resume`, `remove` |
 | `migrate.py` | Copies one or more mailboxes. Runs inside the container |
 | `Dockerfile`, `requirements.txt` | The image `migrate.py` runs in |
 | `sources.example.txt` | Example for `--sources-file` |

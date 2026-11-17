@@ -84,7 +84,7 @@ It usually takes effect within a few minutes. Google allows up to 24 hours.
 | Command | What it does |
 |---|---|
 | `./setup.sh [options] ARCHIVE SOURCE [SOURCE...]` | Sets up whatever is missing, then copies the mailboxes in the background |
-| `./setup.sh status` | Shows each mailbox: queued, copying (with its latest progress line), or its result |
+| `./setup.sh status` | Shows each mailbox: queued, copying (with how long it has been copying and its latest progress line), or its result and how long it took. Each batch shows how long ago it was started |
 | `./setup.sh logs` | Follows the live log of everything that is copying. Ctrl-C leaves the log; the copy keeps running |
 | `./setup.sh logs MAILBOX` | Follows one mailbox, or prints its saved log if it has finished |
 | `./setup.sh stop` | Stops cleanly: each mailbox finishes the messages it is copying, then exits. Nothing is lost |

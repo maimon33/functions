@@ -191,6 +191,54 @@ describe() {
   esac
 }
 
+epoch_of() {  # epoch_of 'YYYY-MM-DD HH:MM:SS' [utc]: seconds since 1970, with GNU or BSD date
+  local zone=""
+  if [ "${2:-}" = utc ]; then zone=-u; fi
+  if date --version >/dev/null 2>&1; then
+    date $zone -d "$1" +%s
+  else
+    date -j $zone -f '%Y-%m-%d %H:%M:%S' "$1" +%s
+  fi
+}
+
+duration() {  # duration SECONDS: 45s, 12m 05s, 3h 02m
+  if [ "$1" -ge 3600 ]; then
+    printf '%dh %02dm' $(($1 / 3600)) $(($1 % 3600 / 60))
+  elif [ "$1" -ge 60 ]; then
+    printf '%dm %02ds' $(($1 / 60)) $(($1 % 60))
+  else
+    printf '%ds' "$1"
+  fi
+}
+
+batch_elapsed() {  # seconds since the batch was started; for one that is not running, up to its last log line
+  local id=$BATCH_ID start end
+  start=$(epoch_of "${id:0:4}-${id:4:2}-${id:6:2} ${id:9:2}:${id:11:2}:${id:13:2}" 2>/dev/null) || return 1
+  if runner_alive; then
+    end=$(date +%s)
+  else
+    end=$(stat -c %Y "$BATCH_LOG" 2>/dev/null || stat -f %m "$BATCH_LOG" 2>/dev/null) || return 1
+  fi
+  echo $((end - start))
+}
+
+earlier_runs() {  # earlier_runs SOURCE: seconds its finished runs in this batch took, added up
+  # Each run that ended left "took 1h 02m 03s" in the mailbox's log.
+  if [ ! -f "$LOG_DIR/$1.log" ]; then
+    echo 0
+    return 0
+  fi
+  sed -n 's/.* SUMMARY: .*took \([0-9]*\)h \([0-9]*\)m \([0-9]*\)s.*/\1 \2 \3/p' "$LOG_DIR/$1.log" 2>/dev/null |
+    awk '{ s += $1 * 3600 + $2 * 60 + $3 } END { print s + 0 }'
+}
+
+this_run() {  # this_run SOURCE: seconds its container has been running
+  local started
+  started=$(docker inspect -f '{{.State.StartedAt}}' "$(container_name "$1")" 2>/dev/null || true)
+  started=$(epoch_of "${started:0:10} ${started:11:8}" utc 2>/dev/null || true)
+  if [ -n "$started" ]; then echo $(($(date +%s) - started)); else echo 0; fi
+}
+
 describe_job() {  # describe_job SOURCE: its state in words, and its filter if it has one
   local st query
   st=$(job_status "$1")
@@ -546,25 +594,38 @@ EOF
 }
 
 status_batch() {
-  local source st last note
+  local source st last note took now
+  took=$(batch_elapsed || true)
+  if [ -n "$took" ]; then took=$(duration "$took"); fi
   if runner_alive; then
-    echo "Batch $BATCH_ID is running: copying into $B_DEST ($B_WORKERS workers, up to $B_PARALLEL mailboxes at a time)"
+    echo "Batch $BATCH_ID is running: copying into $B_DEST ($B_WORKERS workers, up to $B_PARALLEL mailboxes at a time)${took:+, started $took ago}"
   elif [ "$(running_copies "$B_DEST")" -gt 0 ]; then
     echo "Batch $BATCH_ID (into $B_DEST): the background runner is gone (killed, or the machine restarted),"
     echo "but mailboxes that had started are still copying. Take over with: $0 resume    Or stop them: $0 stop"
   elif batch_unfinished; then
-    echo "Batch $BATCH_ID (into $B_DEST) is stopped. Continue with: $0 resume"
+    echo "Batch $BATCH_ID (into $B_DEST) is stopped${took:+, $took after it was started}. Continue with: $0 resume"
   else
-    echo "Batch $BATCH_ID (into $B_DEST) has finished."
+    echo "Batch $BATCH_ID (into $B_DEST) has finished${took:+, $took after it was started}."
   fi
   while IFS= read -r source <&3; do
     st=$(job_status "$source")
     if [ "$st" != running ]; then
-      printf '  %-40s %s\n' "$source" "$(describe_job "$source")"
+      took=$(earlier_runs "$source")
+      if [ "$took" -eq 0 ]; then
+        note=""
+      elif [ "$st" = 0 ]; then
+        note=" (took $(duration "$took"))"
+      else
+        note=" ($(duration "$took") of copying so far)"
+      fi
+      printf '  %-40s %s\n' "$source" "$(describe_job "$source")$note"
     elif [ "$(docker inspect -f '{{.State.Running}}' "$(container_name "$source")" 2>/dev/null || true)" = true ]; then
       note=$(job_query "$source")
       if [ -n "$note" ]; then note=" (filter: $note)"; fi
-      printf '  %-40s %s\n' "$source" "copying$note"
+      took=$(earlier_runs "$source")
+      now=$(this_run "$source")
+      if [ "$took" -gt 0 ]; then note=", $(duration $((took + now))) with its earlier runs$note"; fi
+      printf '  %-40s %s\n' "$source" "copying for $(duration "$now")$note"
       last=$(docker logs --tail 1 "$(container_name "$source")" 2>&1 | cut -c1-120 || true)
       if [ -n "$last" ]; then printf '  %-40s   %s\n' "" "$last"; fi
     else

@@ -1,0 +1,6 @@
+# One source mailbox per line. Blank lines and anything after a # are ignored.
+# Use it with:  ./setup.sh --sources-file sources.txt archive@example.com
+
+leaver1@example.com
+leaver2@example.com   # left in March
+old-shared-inbox@example.com

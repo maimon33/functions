@@ -17,3 +17,8 @@ Usage:<br>
 ### TeamDrive Usage (Files count only)
 Usage:<br>
 `python google_admin_reports.py drives`
+
+# Gmail mailbox archive
+
+Copies whole Workspace mailboxes into one archive mailbox, so the original accounts can be deleted.<br>
+See [gmail-mailbox-archive](gmail-mailbox-archive/README.md)

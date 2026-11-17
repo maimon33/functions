@@ -89,31 +89,41 @@ It usually takes effect within a few minutes. Google allows up to 24 hours.
 | `./setup.sh logs MAILBOX` | Follows one mailbox, or prints its saved log if it has finished |
 | `./setup.sh stop` | Stops cleanly: each mailbox finishes the messages it is copying, then exits. Nothing is lost |
 | `./setup.sh resume` | Continues what was stopped, and retries every mailbox that is not verified yet |
-| `./setup.sh remove MAILBOX` | Takes one mailbox out of its batch. If it is copying, it stops cleanly; `resume` no longer retries it. What it has copied stays |
 
-`status`, `logs`, `stop`, `resume` and `remove` act on every batch. Add `--archive ADDRESS`
-after the command to act on the batch of one archive mailbox only, for example
-`./setup.sh stop --archive archive@example.com`.
+Managing batches. There is one batch per archive mailbox:
+
+| Command | What it does |
+|---|---|
+| `./setup.sh list` | One line per batch: its archive mailbox, whether it is running, and how many mailboxes are copying, queued, verified and not done |
+| `./setup.sh add [options] ARCHIVE SOURCE [SOURCE...]` | Adds mailboxes to that archive's batch, and starts a batch if there is none. Skips the setup steps and the dry run, so it returns in a few seconds. Takes the same options as a full run |
+| `./setup.sh remove MAILBOX [MAILBOX...]` | Takes mailboxes out of their batch. One that is copying stops cleanly, and `resume` no longer retries it. What it has copied stays |
+| `./setup.sh delete ARCHIVE` | Stops that archive's batch cleanly, then forgets the batch: its queue and the status of each mailbox. What was copied, the record of it and the logs are kept, so copying the same mailboxes later continues where it stopped |
+
+`list`, `status`, `logs`, `stop`, `resume` and `remove` act on every batch. Add
+`--archive ADDRESS` after the command to act on the batch of one archive mailbox only, for
+example `./setup.sh stop --archive archive@example.com`.
 
 | Option | Default | Meaning |
 |---|---|---|
 | `--sources-file FILE` | | Read source mailboxes from a file, one per line. Blank lines and `#` comments are ignored. See `sources.example.txt` |
 | `--query SEARCH` | | Copy only the messages that match a Gmail search, for the source mailboxes of this command. See [Copying only part of a mailbox](#copying-only-part-of-a-mailbox) |
 | `--workers N` | 12 | Total number of messages copied into one archive at once, shared by the mailboxes being copied into it |
-| `--parallel N` | 3 | Mailboxes copied into one archive at the same time, one container each |
+| `--parallel N` | all of them | At most N mailboxes are copied into one archive at the same time, one container each. By default every waiting mailbox is copied at once, as long as each can have a worker of its own, so at most `--workers` of them. `--parallel 1` copies one after the other |
 | `--skip-dry-run` | | Skip step 5 and the confirmation. Only for reruns, after a dry run has passed |
 | `PROJECT_ID=...` (environment) | derived from the domain | Use a specific Google Cloud project |
 
-`resume` also takes `--workers` and `--parallel`, to change them for the rest of a batch.
+`resume` also takes `--workers` and `--parallel` (a number, or `auto` for the default), to
+change them for the rest of a batch.
 
 ### Batches
 
 The mailboxes you copy into one archive mailbox form a batch. One background process
 works through its queue, a few mailboxes at a time.
 
-- **Adding mailboxes while a batch is running** adds them to that batch. Just run the normal command again with the new addresses. A mailbox that is already queued or copying is left as it is.
+- **Adding mailboxes while a batch is running** adds them to that batch: `./setup.sh add ARCHIVE SOURCE...`, or the normal command again if you want the dry run first. A mailbox that is already queued or copying is left as it is.
 - **A stopped batch** is continued by `./setup.sh resume`, or by adding more mailboxes to it.
 - **A finished batch** is left alone. The next run into that archive starts a new batch. Its logs stay under `logs/`.
+- **`remove` or `delete`?** `remove` takes single mailboxes out and leaves the rest of the batch running. `delete` ends the whole batch of one archive. Neither undoes anything that has been copied.
 - **A second archive mailbox** gets its own batch, with its own `--workers` and `--parallel`, and runs at the same time as the first. Gmail's limit applies to each archive mailbox separately.
 - **A mailbox is in one batch at a time.** If it is queued or copying into one archive, a command that names it for another archive skips it and says so.
 
@@ -220,7 +230,7 @@ Measured on real mailboxes averaging about 0.5 MB per message:
 | 10 | about 5 |
 
 - More than about 16 workers gains nothing. Past the ceiling, requests are throttled and retried.
-- `--parallel` does not make the total faster. It lets small mailboxes finish without waiting behind a large one, and keeps one failing mailbox from holding up the rest. The workers are divided among the mailboxes that are copying, as evenly as the number allows, and are divided again whenever one starts or finishes.
+- Copying mailboxes side by side does not make the total faster. It lets small mailboxes finish without waiting behind a large one, and keeps one failing mailbox from holding up the rest. The workers are divided among the mailboxes that are copying, as evenly as the number allows, and are divided again whenever one starts or finishes. With more mailboxes than workers, the rest wait their turn; `--parallel N` lowers that limit.
 - Gmail can slow down during a long run. In one run, after about two hours the time Gmail took to accept a message rose from under 2 seconds to about 6, with no error, and the rate fell to a third.
 - As a rough guide, 100,000 messages take five to six hours at 5 messages per second.
 - Running it from a laptop is fine. In those measurements the rate did not depend on message size, so the time goes on waiting for Gmail, not on bandwidth.
@@ -358,7 +368,7 @@ access the script created:
 
 | File | Role |
 |---|---|
-| `setup.sh` | Setup, the dry run, and the batches: queue, background runner, `status`, `logs`, `stop`, `resume`, `remove` |
+| `setup.sh` | Setup, the dry run, and the batches: queue, background runner, and the commands that manage them |
 | `migrate.py` | Copies one or more mailboxes. Runs inside the container |
 | `Dockerfile`, `requirements.txt` | The image `migrate.py` runs in |
 | `sources.example.txt` | Example for `--sources-file` |

@@ -14,11 +14,20 @@
 #   ./setup.sh status            what is queued, copying and finished
 #   ./setup.sh logs [MAILBOX]    follow the live log (Ctrl-C leaves the log, not the copy)
 #   ./setup.sh stop              stop cleanly; nothing is lost
-#   ./setup.sh resume [--workers N] [--parallel N]
+#   ./setup.sh resume [--workers N] [--parallel N|auto]
 #                                continue what was stopped, and retry what did not finish
-#   ./setup.sh remove MAILBOX    take one mailbox out: it stops cleanly and is not retried
 #   Add --archive ARCHIVE_MAILBOX after any of these to act on that archive's batch only,
 #   for example: ./setup.sh stop --archive archive@example.com
+#
+# Managing batches (one batch per archive mailbox):
+#   ./setup.sh list                          one line per batch
+#   ./setup.sh add [options] ARCHIVE_MAILBOX SOURCE_MAILBOX...
+#                                            add mailboxes to that archive's batch, starting
+#                                            one if needed; no setup steps and no dry run
+#   ./setup.sh remove MAILBOX...             take mailboxes out of their batch: they stop
+#                                            cleanly and are not retried
+#   ./setup.sh delete ARCHIVE_MAILBOX        stop that archive's batch cleanly and forget it;
+#                                            what was copied, its record and the logs are kept
 #
 # The copy runs as a "batch" in the background, so the terminal comes straight back and
 # can be closed. There is one batch per archive mailbox. Starting more mailboxes into an
@@ -35,9 +44,11 @@
 #                        being copied into it (default: 12). Gmail caps one archive
 #                        mailbox at roughly 10 messages/s, so more than about 16 gains
 #                        nothing.
-#   --parallel N         mailboxes copied into one archive at the same time, one
-#                        container each (default: 3). This does not raise the total
-#                        speed; it keeps small mailboxes from waiting behind big ones.
+#   --parallel N         at most N mailboxes are copied into one archive at the same
+#                        time, one container each. Default: all of them, as long as
+#                        each can have a worker of its own (so at most --workers).
+#                        --parallel 1 copies one mailbox after the other. This does not
+#                        change the total speed; it decides who waits.
 #   --skip-dry-run       skip the access check and the confirmation; start copying at
 #                        once. Use it only for reruns, after a dry run has passed.
 #
@@ -87,17 +98,22 @@ usage() {
   cat >&2 <<EOF
 Usage: $0 [options] ARCHIVE_MAILBOX SOURCE_MAILBOX [SOURCE_MAILBOX...]
        $0 [options] --sources-file FILE ARCHIVE_MAILBOX [SOURCE_MAILBOX...]
-       $0 status | logs [MAILBOX] | stop | resume [--workers N] [--parallel N] | remove MAILBOX
-          (each of these also takes --archive ADDRESS)
+       $0 status | logs [MAILBOX] | stop | resume [--workers N] [--parallel N|auto]
+Batches (one per archive mailbox):
+       $0 list                                      one line per batch
+       $0 add [options] ARCHIVE_MAILBOX SOURCE...   add mailboxes; no setup steps, no dry run
+       $0 remove MAILBOX...                         take mailboxes out of their batch
+       $0 delete ARCHIVE_MAILBOX                    stop that batch cleanly and forget it
 Options:
   --sources-file FILE  read source mailboxes from FILE, one address per line
                        (blank lines and # comments are ignored)
   --query SEARCH       copy only the messages that match this Gmail search, for example
                        '-label:alerts'. What it leaves out is NOT archived.
   --workers N          total parallel copies into one archive (default: 12)
-  --parallel N         mailboxes copied into one archive at the same time (default: 3)
+  --parallel N         at most N mailboxes at the same time (default: all of them, up to
+                       one per worker; 1 = one after the other)
   --skip-dry-run       skip the access check and the confirmation (reruns only)
-  --archive ADDRESS    after status, logs, stop, resume or remove: only that archive's batch
+  --archive ADDRESS    after list, status, logs, stop, resume or remove: only that archive's batch
 The copy runs in the background, one batch per archive mailbox. Starting more mailboxes
 into an archive whose batch is unfinished adds them to it.
 EOF
@@ -143,6 +159,8 @@ batch_load() {
   B_DEST=$(cat "$BATCH/dest")
   B_WORKERS=$(cat "$BATCH/workers")
   B_PARALLEL=$(cat "$BATCH/parallel")
+  # auto: every waiting mailbox is copied at once, as long as each can have a worker of its own.
+  if [ "$B_PARALLEL" = auto ]; then B_PARALLEL=$B_WORKERS; fi
   LOG_DIR="logs/$BATCH_ID"
   BATCH_LOG="$LOG_DIR/batch.log"
   mkdir -p "$LOG_DIR" "$BATCH/status" "$BATCH/followers" "$BATCH/query"
@@ -681,7 +699,9 @@ cmd_resume() {
     esac
   done
   if [ -n "$workers" ]; then is_count "$workers" || die "--workers must be a positive whole number, got '$workers'"; fi
-  if [ -n "$parallel" ]; then is_count "$parallel" || die "--parallel must be a positive whole number, got '$parallel'"; fi
+  if [ -n "$parallel" ] && [ "$parallel" != auto ]; then
+    is_count "$parallel" || die "--parallel must be a positive whole number or 'auto', got '$parallel'"
+  fi
   [ -d "$BATCHES" ] || die "nothing to resume. Start a copy with: $0 ARCHIVE_MAILBOX SOURCE_MAILBOX..."
   find_batches
   docker ps -q >/dev/null 2>&1 || die "Docker is not running. Start it, then rerun."
@@ -701,11 +721,22 @@ cmd_resume() {
   done
 }
 
-cmd_remove() {  # take one mailbox out of its batch
-  local dir st name removed=""
-  [ $# -eq 1 ] || usage
-  check_address "$1"
+cmd_remove() {  # remove MAILBOX...: take mailboxes out of their batch
+  local mailbox missing=""
+  [ $# -ge 1 ] || usage
+  for mailbox in "$@"; do check_address "$mailbox"; done
   find_batches
+  for mailbox in "$@"; do
+    if ! remove_one "$mailbox"; then
+      echo "'$mailbox' is not in any batch (see: $0 status)" >&2
+      missing=yes
+    fi
+  done
+  if [ -n "$missing" ]; then exit 1; fi
+}
+
+remove_one() {  # fails if the mailbox is in none of BATCH_DIRS
+  local dir st name removed=""
   for dir in "${BATCH_DIRS[@]}"; do
     BATCH=$dir
     if [ "$(job_status "$1")" = none ]; then continue; fi
@@ -739,11 +770,233 @@ cmd_remove() {  # take one mailbox out of its batch
     echo "Removed $1 from batch $BATCH_ID (into $B_DEST)."
     echo "What it has copied so far stays in the archive, and a later copy continues from there."
   done
-  [ -n "$removed" ] || die "'$1' is not in any batch (see: $0 status)"
+  [ -n "$removed" ]
+}
+
+parse_copy_args() {  # what to copy: sets DEST, SOURCES, QUERY, WORKERS, PARALLEL and the rest
+  local line source source_lc
+  WORKERS=12
+  PARALLEL=auto
+  WORKERS_SET=""
+  PARALLEL_SET=""
+  SKIP_DRY_RUN=""
+  SOURCES_FILE=""
+  QUERY=""
+  MAILBOXES=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --workers) [ $# -ge 2 ] || usage; WORKERS=$2; WORKERS_SET=yes; shift 2 ;;
+      --workers=*) WORKERS=${1#*=}; WORKERS_SET=yes; shift ;;
+      --parallel) [ $# -ge 2 ] || usage; PARALLEL=$2; PARALLEL_SET=yes; shift 2 ;;
+      --parallel=*) PARALLEL=${1#*=}; PARALLEL_SET=yes; shift ;;
+      --sources-file) [ $# -ge 2 ] || usage; SOURCES_FILE=$2; shift 2 ;;
+      --sources-file=*) SOURCES_FILE=${1#*=}; shift ;;
+      --query) [ $# -ge 2 ] || usage; QUERY=$2; shift 2 ;;
+      --query=*) QUERY=${1#*=}; shift ;;
+      --skip-dry-run) SKIP_DRY_RUN=yes; shift ;;
+      -h | --help) usage ;;
+      -*) echo "Unknown option: $1" >&2; usage ;;
+      *) MAILBOXES+=("$1"); shift ;;
+    esac
+  done
+  [ "${#MAILBOXES[@]}" -ge 1 ] || usage
+  is_count "$WORKERS" || die "--workers must be a positive whole number, got '$WORKERS'"
+  if [ "$PARALLEL" != auto ]; then
+    is_count "$PARALLEL" || die "--parallel must be a positive whole number or 'auto', got '$PARALLEL'"
+  fi
+
+  if [ -n "$SOURCES_FILE" ]; then
+    case "$SOURCES_FILE" in /*) ;; *) SOURCES_FILE="$START_DIR/$SOURCES_FILE" ;; esac
+    [ -f "$SOURCES_FILE" ] && [ -r "$SOURCES_FILE" ] || die "cannot read the sources file '$SOURCES_FILE'"
+    while IFS= read -r line || [ -n "$line" ]; do  # the || keeps a last line that has no newline
+      line=${line%%#*}
+      line=$(printf '%s' "$line" | tr -d '[:space:]')  # also drops the \r of Windows line endings
+      if [ -n "$line" ]; then MAILBOXES+=("$line"); fi
+    done <"$SOURCES_FILE"
+  fi
+  [ "${#MAILBOXES[@]}" -ge 2 ] || die "no source mailboxes given (on the command line or in --sources-file)"
+
+  DEST=${MAILBOXES[0]}
+  check_address "$DEST"
+  DEST_LC=$(lower "$DEST")
+  SOURCES=()
+  SOURCE_ARGS=()  # the same list as --source arguments, for the dry run
+  SEEN=" "
+  for source in "${MAILBOXES[@]:1}"; do
+    check_address "$source"
+    source_lc=$(lower "$source")
+    [ "$source_lc" != "$DEST_LC" ] || die "the archive mailbox cannot also be a source"
+    case "$SEEN" in *" $source_lc "*) continue ;; esac  # listed twice: copy it once
+    SEEN="$SEEN$source_lc "
+    SOURCES+=("$source")
+    SOURCE_ARGS+=(--source "$source")
+  done
+}
+
+enqueue_and_start() {  # put SOURCES in the batch of DEST, and start its runner unless it is running
+  local source other joined added running
+  local -a ACCEPTED
+  refuse_foreign_copies
+  use_batch "$DEST"
+
+  # A mailbox is copied by one container at a time, so it cannot be in two batches at once.
+  ACCEPTED=()
+  for source in "${SOURCES[@]}"; do
+    if other=$(other_batch_with "$source"); then
+      echo "    $source is in the batch that copies into $other; skipped. Add it again once that has finished."
+    else
+      ACCEPTED+=("$source")
+    fi
+  done
+  [ "${#ACCEPTED[@]}" -gt 0 ] || die "nothing left to start (see: $0 status)"
+  mkdir -p "$BATCH" logs
+
+  lock
+  if batch_exists && batch_unfinished; then
+    # The batch into this archive is running or was stopped: these mailboxes join it.
+    batch_load
+    joined=yes
+  else
+    # Nothing unfinished: start a new batch. Logs of earlier batches stay under logs/.
+    rm -rf "$BATCH/status" "$BATCH/followers" "$BATCH/query"
+    rm -f "$BATCH/stop" "$BATCH/runner.pid" "$BATCH/shares"
+    : >"$BATCH/queue"
+    put "$BATCH/id" "$(date +%Y%m%d-%H%M%S)"
+    put "$BATCH/dest" "$DEST"
+    put "$BATCH/workers" "$WORKERS"
+    put "$BATCH/parallel" "$PARALLEL"
+    batch_load
+    joined=""
+  fi
+  added=0
+  for source in "${ACCEPTED[@]}"; do
+    case "$(job_status "$source")" in
+      queued | running)
+        echo "    $source is already in batch $BATCH_ID; left as it is"
+        continue
+        ;;
+    esac
+    # New here, or finished earlier in this batch: queue it (again) to copy whatever is new.
+    if ! grep -qixF -- "$source" "$BATCH/queue"; then printf '%s\n' "$source" >>"$BATCH/queue"; fi
+    if [ -n "$QUERY" ]; then
+      put "$BATCH/query/$(lower "$source")" "$QUERY"
+    else
+      rm -f "$BATCH/query/$(lower "$source")"
+    fi
+    set_job_status "$source" queued
+    added=$((added + 1))
+  done
+  running=""
+  if runner_alive; then running=yes; fi
+  unlock
+
+  if [ -n "$running" ]; then
+    echo "    Added $added mailbox(es) to batch $BATCH_ID, which is copying into $B_DEST in the background."
+    if [ -n "$WORKERS_SET$PARALLEL_SET" ]; then
+      echo "    The running batch keeps its settings ($B_WORKERS workers, $B_PARALLEL mailboxes at a time)."
+      echo "    To change them: $0 stop, then $0 resume --workers N --parallel N"
+    fi
+    echo "    Follow it with: $0 logs      Overview: $0 status"
+  else
+    if [ -n "$joined" ]; then
+      echo "    Added $added mailbox(es) to batch $BATCH_ID, which was stopped. Resuming it."
+      if [ -n "$WORKERS_SET" ]; then put "$BATCH/workers" "$WORKERS"; fi
+      if [ -n "$PARALLEL_SET" ]; then put "$BATCH/parallel" "$PARALLEL"; fi
+      batch_load
+    fi
+    resume_batch
+  fi
+}
+
+have_batches() {
+  local dir
+  for dir in "$BATCHES"/*; do
+    if [ -f "$dir/id" ]; then return 0; fi
+  done
+  return 1
+}
+
+cmd_list() {  # one line per batch
+  local dir source state copying queued verified other
+  [ $# -eq 0 ] || usage
+  if ! have_batches; then
+    echo "No batches yet. Start one with: $0 ARCHIVE_MAILBOX SOURCE_MAILBOX..."
+    return 0
+  fi
+  find_batches
+  printf '%-34s %-16s %-10s %8s %7s %9s %9s\n' ARCHIVE BATCH STATE COPYING QUEUED VERIFIED "NOT DONE"
+  for dir in "${BATCH_DIRS[@]}"; do
+    BATCH=$dir
+    batch_load
+    if runner_alive; then
+      state=running
+    elif [ "$(running_copies "$B_DEST")" -gt 0 ]; then
+      state="no runner"  # containers are copying, but nothing watches them: resume takes over
+    elif batch_unfinished; then
+      state=stopped
+    else
+      state=finished
+    fi
+    copying=0 queued=0 verified=0 other=0
+    while IFS= read -r source <&3; do
+      case "$(job_status "$source")" in
+        running) copying=$((copying + 1)) ;;
+        queued) queued=$((queued + 1)) ;;
+        0) verified=$((verified + 1)) ;;
+        *) other=$((other + 1)) ;;
+      esac
+    done 3<"$BATCH/queue"
+    printf '%-34s %-16s %-10s %8s %7s %9s %9s\n' "$B_DEST" "$BATCH_ID" "$state" "$copying" "$queued" "$verified" "$other"
+  done
+  echo "Details: $0 status"
+}
+
+cmd_add() {  # add ARCHIVE SOURCE...: straight into the batch, without the setup steps or a dry run
+  parse_copy_args "$@"
+  [ -s "$KEY" ] || die "there is no key yet. Run the full command once, it does the setup: $0 ARCHIVE_MAILBOX SOURCE_MAILBOX..."
+  docker ps -q >/dev/null 2>&1 || die "Docker is not running. Start it, then rerun."
+  docker build -q -t "$IMAGE" . >/dev/null
+  if [ -n "$QUERY" ]; then echo "    filter: $QUERY   (what it leaves out is NOT archived)"; fi
+  enqueue_and_start
+}
+
+cmd_delete() {  # delete ARCHIVE: stop the batch of that archive cleanly, then forget the batch
+  local source
+  if [ $# -eq 1 ] && [ -z "$ARCHIVE" ]; then
+    ARCHIVE=$1
+    shift
+  fi
+  if [ $# -ne 0 ] || [ -z "$ARCHIVE" ]; then
+    die "say which batch to delete: $0 delete ARCHIVE_MAILBOX (see: $0 list)"
+  fi
+  check_address "$ARCHIVE"
+  find_batches
+  BATCH=${BATCH_DIRS[0]}
+  batch_load
+  STOPPED=""
+  stop_batch
+  reap_and_count  # containers that ended while nothing was watching: keep their logs, remove them
+  if [ -z "$STOPPED" ]; then status_batch; fi  # the last word on each mailbox, before it is forgotten
+  while IFS= read -r source <&3; do  # a container nobody is waiting for must not stay behind
+    docker rm -f "$(container_name "$source")" >/dev/null 2>&1 || true
+  done 3<"$BATCH/queue"
+  rm -rf "$BATCH"
+  echo
+  echo "Deleted batch $BATCH_ID (into $B_DEST): its queue and the status of each mailbox."
+  echo "Kept: everything already copied into the archive, the record of it (a later copy of"
+  echo "the same mailboxes continues from there) and the logs in $LOG_DIR/."
 }
 
 case "${1:-}" in
-  status | logs | stop | resume | remove | _runner)
+  add)  # takes the same arguments as a full run, the archive mailbox first
+    shift
+    cmd_add "$@"
+    exit 0
+    ;;
+esac
+
+case "${1:-}" in
+  list | status | logs | stop | resume | remove | delete | _runner)
     command=$1
     shift
     # --archive is common to all of them: take it out and pass the rest on, in order.
@@ -774,60 +1027,7 @@ case "${1:-}" in
     ;;
 esac
 
-WORKERS=12
-PARALLEL=3
-WORKERS_SET=""
-PARALLEL_SET=""
-SKIP_DRY_RUN=""
-SOURCES_FILE=""
-QUERY=""
-MAILBOXES=()
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --workers) [ $# -ge 2 ] || usage; WORKERS=$2; WORKERS_SET=yes; shift 2 ;;
-    --workers=*) WORKERS=${1#*=}; WORKERS_SET=yes; shift ;;
-    --parallel) [ $# -ge 2 ] || usage; PARALLEL=$2; PARALLEL_SET=yes; shift 2 ;;
-    --parallel=*) PARALLEL=${1#*=}; PARALLEL_SET=yes; shift ;;
-    --sources-file) [ $# -ge 2 ] || usage; SOURCES_FILE=$2; shift 2 ;;
-    --sources-file=*) SOURCES_FILE=${1#*=}; shift ;;
-    --query) [ $# -ge 2 ] || usage; QUERY=$2; shift 2 ;;
-    --query=*) QUERY=${1#*=}; shift ;;
-    --skip-dry-run) SKIP_DRY_RUN=yes; shift ;;
-    -h | --help) usage ;;
-    -*) echo "Unknown option: $1" >&2; usage ;;
-    *) MAILBOXES+=("$1"); shift ;;
-  esac
-done
-[ "${#MAILBOXES[@]}" -ge 1 ] || usage
-is_count "$WORKERS" || die "--workers must be a positive whole number, got '$WORKERS'"
-is_count "$PARALLEL" || die "--parallel must be a positive whole number, got '$PARALLEL'"
-
-if [ -n "$SOURCES_FILE" ]; then
-  case "$SOURCES_FILE" in /*) ;; *) SOURCES_FILE="$START_DIR/$SOURCES_FILE" ;; esac
-  [ -f "$SOURCES_FILE" ] && [ -r "$SOURCES_FILE" ] || die "cannot read the sources file '$SOURCES_FILE'"
-  while IFS= read -r line || [ -n "$line" ]; do  # the || keeps a last line that has no newline
-    line=${line%%#*}
-    line=$(printf '%s' "$line" | tr -d '[:space:]')  # also drops the \r of Windows line endings
-    if [ -n "$line" ]; then MAILBOXES+=("$line"); fi
-  done <"$SOURCES_FILE"
-fi
-[ "${#MAILBOXES[@]}" -ge 2 ] || die "no source mailboxes given (on the command line or in --sources-file)"
-
-DEST=${MAILBOXES[0]}
-check_address "$DEST"
-DEST_LC=$(lower "$DEST")
-SOURCES=()
-SOURCE_ARGS=()  # the same list as --source arguments, for the dry run
-SEEN=" "
-for source in "${MAILBOXES[@]:1}"; do
-  check_address "$source"
-  source_lc=$(lower "$source")
-  [ "$source_lc" != "$DEST_LC" ] || die "the archive mailbox cannot also be a source"
-  case "$SEEN" in *" $source_lc "*) continue ;; esac  # listed twice: copy it once
-  SEEN="$SEEN$source_lc "
-  SOURCES+=("$source")
-  SOURCE_ARGS+=(--source "$source")
-done
+parse_copy_args "$@"
 
 if [ -z "${PROJECT_ID:-}" ]; then
   # Project IDs are global, so derive one from the domain: gmail-archive-company-com
@@ -1053,73 +1253,4 @@ if [ -z "$SKIP_DRY_RUN" ] && ! confirm "Dry run passed. Start the real copy now?
   echo "    Not started. Rerun this script when ready."
   exit 0
 fi
-refuse_foreign_copies
-use_batch "$DEST"
-
-# A mailbox is copied by one container at a time, so it cannot be in two batches at once.
-ACCEPTED=()
-for source in "${SOURCES[@]}"; do
-  if other=$(other_batch_with "$source"); then
-    echo "    $source is in the batch that copies into $other; skipped. Add it again once that has finished."
-  else
-    ACCEPTED+=("$source")
-  fi
-done
-[ "${#ACCEPTED[@]}" -gt 0 ] || die "nothing left to start (see: $0 status)"
-mkdir -p "$BATCH" logs
-
-lock
-if batch_exists && batch_unfinished; then
-  # The batch into this archive is running or was stopped: these mailboxes join it.
-  batch_load
-  joined=yes
-else
-  # Nothing unfinished: start a new batch. Logs of earlier batches stay under logs/.
-  rm -rf "$BATCH/status" "$BATCH/followers" "$BATCH/query"
-  rm -f "$BATCH/stop" "$BATCH/runner.pid" "$BATCH/shares"
-  : >"$BATCH/queue"
-  put "$BATCH/id" "$(date +%Y%m%d-%H%M%S)"
-  put "$BATCH/dest" "$DEST"
-  put "$BATCH/workers" "$WORKERS"
-  put "$BATCH/parallel" "$PARALLEL"
-  batch_load
-  joined=""
-fi
-added=0
-for source in "${ACCEPTED[@]}"; do
-  case "$(job_status "$source")" in
-    queued | running)
-      echo "    $source is already in batch $BATCH_ID; left as it is"
-      continue
-      ;;
-  esac
-  # New here, or finished earlier in this batch: queue it (again) to copy whatever is new.
-  if ! grep -qixF -- "$source" "$BATCH/queue"; then printf '%s\n' "$source" >>"$BATCH/queue"; fi
-  if [ -n "$QUERY" ]; then
-    put "$BATCH/query/$(lower "$source")" "$QUERY"
-  else
-    rm -f "$BATCH/query/$(lower "$source")"
-  fi
-  set_job_status "$source" queued
-  added=$((added + 1))
-done
-running=""
-if runner_alive; then running=yes; fi
-unlock
-
-if [ -n "$running" ]; then
-  echo "    Added $added mailbox(es) to batch $BATCH_ID, which is copying into $B_DEST in the background."
-  if [ -n "$WORKERS_SET$PARALLEL_SET" ]; then
-    echo "    The running batch keeps its settings ($B_WORKERS workers, $B_PARALLEL mailboxes at a time)."
-    echo "    To change them: $0 stop, then $0 resume --workers N --parallel N"
-  fi
-  echo "    Follow it with: $0 logs      Overview: $0 status"
-else
-  if [ -n "$joined" ]; then
-    echo "    Added $added mailbox(es) to batch $BATCH_ID, which was stopped. Resuming it."
-    if [ -n "$WORKERS_SET" ]; then put "$BATCH/workers" "$WORKERS"; fi
-    if [ -n "$PARALLEL_SET" ]; then put "$BATCH/parallel" "$PARALLEL"; fi
-    batch_load
-  fi
-  resume_batch
-fi
+enqueue_and_start
